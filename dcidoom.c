@@ -34,8 +34,10 @@ LRESULT CALLBACK wndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                 case WM_ERASEBKGND:
                         toPaint++;
                         return 1;
+                case WM_CLOSE:
+                        DestroyWindow(hWnd);
+                        break;
                 case WM_DESTROY:
-                        exited = 1;
                         PostQuitMessage(0);
                         break;
                 case WM_PAINT:
@@ -65,12 +67,16 @@ HWND createWindowForPalette()
         window = CreateWindowExA(0, "DCI", "DCI", WS_VISIBLE | WS_POPUP | 8, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), NULL, NULL, wclass.hInstance, NULL);
         return window;
 }
-
+static int isbanked = 0;
+void* (WINAPI *fnMapSLFix)(DWORD) = NULL;
 int main(int argc, char** argv)
 {
         DWORD width, height;
         int bpp = 1;
+        unsigned char* mappedPtr;
         LPDCISURFACEINFO info = NULL;
+        HMODULE kernel32module = LoadLibraryA("kernel32.dll");
+        fnMapSLFix = (void*)GetProcAddress(kernel32module, "MapSLFix");
         dciManagerLibHandle = LoadLibraryA("DCIMAN32.DLL");
         if (dciManagerLibHandle)
         {
@@ -87,6 +93,7 @@ int main(int argc, char** argv)
             printf("Failed to create DCI primary surface!\n");
             return -1;
         }
+        isbanked = (info->dwDCICaps & DCI_1632_ACCESS);
         if (info->dwBitCount == 32) bpp = 4;
         if (info->dwBitCount == 24) bpp = 3;
         if (info->dwBitCount == 16 || info->dwBitCount == 15) bpp = 2;
@@ -126,9 +133,11 @@ int main(int argc, char** argv)
         int bRet;
         MSG msg;
         if (fnDCIBeginAccess(info, 0, 0, info->dwWidth, info->dwHeight) >= DCI_OK) {
+            if (isbanked)
+                mappedPtr = fnMapSLFix(info->dwOffSurface | (info->wSelSurface << 16));
             for (int y = 0; y < info->dwHeight; y++)
             {
-                unsigned char* ptr = (unsigned char*)info->dwOffSurface;
+                unsigned char* ptr = (unsigned char*)(isbanked ? mappedPtr : info->dwOffSurface);
                 memset(&ptr[y * info->lStride], 255, info->dwWidth * bpp);
             }
             fnDCIEndAccess(info);
@@ -137,7 +146,7 @@ int main(int argc, char** argv)
             fnDCIBeginAccess(info, 0, 0, info->dwWidth, info->dwHeight);
             for (int y = 0; y < info->dwHeight; y++)
             {
-                unsigned char* ptr = (unsigned char*)info->dwOffSurface;
+                unsigned char* ptr = (unsigned char*)(isbanked ? mappedPtr : info->dwOffSurface);
                 memset(&ptr[y * info->lStride], 0, info->dwWidth * bpp);
             }
             fnDCIEndAccess(info);
@@ -148,14 +157,16 @@ int main(int argc, char** argv)
         }
         while ((bRet = GetMessage(&msg, hwnd, 0, 0)) != 0)
         {
+                if (bRet == -1)
+                    break;
                 doom_update();
                 const unsigned char* fb = doom_get_framebuffer(1);
-                if (exited) { exit(-1); }
+                if (exited) { break; }
                 if (fnDCIBeginAccess(info, 0, 0, width, height) >= DCI_OK) {
-                    unsigned char* ptr = (unsigned char*)info->dwOffSurface;
+                    unsigned char* ptr = (unsigned char*)(isbanked ? mappedPtr : info->dwOffSurface);
                     for (int y = 0; y < 200; y++)
                     {
-                        memcpy(&ptr[y * info->lStride], &fb[y * 320], 320);
+                        memcpy(&ptr[y * info->lStride], &fb[y * 320 * bpp], 320 * bpp);
                     }
                     fnDCIEndAccess(info);
                 }
